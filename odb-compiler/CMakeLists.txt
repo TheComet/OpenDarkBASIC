@@ -213,12 +213,13 @@ add_library (odb-compiler ${ODBCOMPILER_LIB_TYPE}
     "src/commands/CommandMatcher.cpp"
     "src/ir/codegen/CodeGenerator.cpp"
     "src/ir/codegen/ODBEngineInterface.cpp"
-    "src/ir/codegen/TGCEngineInterface.cpp"
+    "src/ir/codegen/DBPEngineInterface.cpp"
     "src/ir/semantic/ASTConverter.cpp"
     "src/ir/Codegen.cpp"
     "src/ir/Node.cpp"
     "src/ir/SemanticChecker.cpp"
-    "src/parsers/db/Driver.cpp")
+    "src/parsers/db/Driver.cpp"
+    "src/parsers/DynamicLibData.cpp")
 target_include_directories (odb-compiler
     PUBLIC
         $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
@@ -251,10 +252,36 @@ set_target_properties (odb-compiler
         POSITION_INDEPENDENT_CODE ${ODBCOMPILER_PIC})
 
 ###############################################################################
-# LLVM stuff
+# Dependencies.
 ###############################################################################
+include (FetchContent)
+include (ExternalProject)
 
-find_package(LLVM REQUIRED CONFIG)
+# LIEF
+
+set (LIEF_PYTHON_API OFF CACHE BOOL "" FORCE)
+set (LIEF_C_API OFF CACHE BOOL "" FORCE)
+set (LIEF_EXAMPLES OFF CACHE BOOL "" FORCE)
+set (LIEF_FROZEN_ENABLED OFF CACHE BOOL "" FORCE)
+set (LIEF_USE_CCACHE OFF CACHE BOOL "" FORCE)
+set (LIEF_LOGGING OFF CACHE BOOL "" FORCE)
+set (LIEF_LOGGING_DEBUG OFF CACHE BOOL "" FORCE)
+set (LIEF_ENABLE_JSON OFF CACHE BOOL "" FORCE)
+set (LIEF_OAT OFF CACHE BOOL "" FORCE)
+set (LIEF_DEX OFF CACHE BOOL "" FORCE)
+set (LIEF_VDEX OFF CACHE BOOL "" FORCE)
+set (LIEF_ART OFF CACHE BOOL "" FORCE)
+FetchContent_Declare (
+    lief
+    URL https://github.com/lief-project/LIEF/archive/b8422047e90e287a76d899c28bea3978f1521b74.tar.gz
+)
+FetchContent_MakeAvailable (lief)
+
+target_link_libraries (odb-compiler PRIVATE LIB_LIEF)
+
+# LLVM
+
+find_package (LLVM REQUIRED CONFIG)
 
 # This is apparently deprecated since 4 years
 # https://lists.llvm.org/pipermail/llvm-dev/2017-November/119054.html
@@ -268,10 +295,79 @@ find_package(LLVM REQUIRED CONFIG)
 if (${ODBCOMPILER_LLVM_ENABLE_SHARED_LIBS})
     set (llvm_use_shared USE_SHARED)
 endif()
-llvm_config (odb-compiler ${llvm_use_shared} core bitwriter x86codegen)
+llvm_config (odb-compiler ${llvm_use_shared} core bitwriter x86codegen aarch64codegen)
 
 target_include_directories (odb-compiler PUBLIC ${LLVM_INCLUDE_DIRS})
 target_compile_definitions (odb-compiler PUBLIC ${LLVM_DEFINITIONS})
+
+# LLD
+
+# TODO: Put this LLD setup code in a separate CMake file.
+
+set(CMAKE_INCLUDE_CURRENT_DIR ON)
+set(LLD_BUILT_STANDALONE TRUE)
+
+find_program(LLVM_CONFIG_PATH "llvm-config" DOC "Path to llvm-config binary")
+if(NOT LLVM_CONFIG_PATH)
+    message(FATAL_ERROR "llvm-config not found: specify LLVM_CONFIG_PATH")
+endif()
+
+execute_process(COMMAND "${LLVM_CONFIG_PATH}"
+    "--obj-root"
+    "--includedir"
+    "--cmakedir"
+    "--src-root"
+    RESULT_VARIABLE HAD_ERROR
+    OUTPUT_VARIABLE LLVM_CONFIG_OUTPUT
+    OUTPUT_STRIP_TRAILING_WHITESPACE)
+if(HAD_ERROR)
+    message(FATAL_ERROR "llvm-config failed with status ${HAD_ERROR}")
+endif()
+
+string(REGEX REPLACE "[ \t]*[\r\n]+[ \t]*" ";" LLVM_CONFIG_OUTPUT "${LLVM_CONFIG_OUTPUT}")
+
+list(GET LLVM_CONFIG_OUTPUT 0 OBJ_ROOT)
+list(GET LLVM_CONFIG_OUTPUT 1 MAIN_INCLUDE_DIR)
+list(GET LLVM_CONFIG_OUTPUT 2 LLVM_CMAKE_PATH)
+list(GET LLVM_CONFIG_OUTPUT 3 MAIN_SRC_DIR)
+
+set(LLVM_OBJ_ROOT ${OBJ_ROOT} CACHE PATH "path to LLVM build tree")
+set(LLVM_MAIN_INCLUDE_DIR ${MAIN_INCLUDE_DIR} CACHE PATH "path to llvm/include")
+set(LLVM_MAIN_SRC_DIR ${MAIN_SRC_DIR} CACHE PATH "Path to LLVM source tree")
+
+file(TO_CMAKE_PATH ${LLVM_OBJ_ROOT} LLVM_BINARY_DIR)
+
+if(NOT EXISTS "${LLVM_CMAKE_PATH}/LLVMConfig.cmake")
+    message(FATAL_ERROR "LLVMConfig.cmake not found")
+endif()
+include("${LLVM_CMAKE_PATH}/LLVMConfig.cmake")
+
+list(APPEND CMAKE_MODULE_PATH "${LLVM_CMAKE_PATH}")
+
+set(PACKAGE_VERSION "${LLVM_PACKAGE_VERSION}")
+include_directories("${LLVM_BINARY_DIR}/include" ${LLVM_INCLUDE_DIRS})
+link_directories(${LLVM_LIBRARY_DIRS})
+
+set(LLVM_LIBRARY_OUTPUT_INTDIR ${CMAKE_BINARY_DIR}/${CMAKE_CFG_INTDIR}/lib${LLVM_LIBDIR_SUFFIX})
+set(LLVM_RUNTIME_OUTPUT_INTDIR ${CMAKE_BINARY_DIR}/${CMAKE_CFG_INTDIR}/bin)
+find_program(LLVM_TABLEGEN_EXE "llvm-tblgen" ${LLVM_TOOLS_BINARY_DIR} NO_DEFAULT_PATH)
+
+include(AddLLVM)
+include(TableGen)
+include(HandleLLVMOptions)
+include(CheckAtomic)
+
+if (NOT WIN32)
+    set (LLVM_LINK_LLVM_DYLIB ${ODBCOMPILER_LLVM_ENABLE_SHARED_LIBS})
+endif ()
+
+FetchContent_Declare (
+    lld
+    URL https://github.com/llvm/llvm-project/releases/download/llvmorg-11.1.0/lld-11.1.0.src.tar.xz
+)
+FetchContent_MakeAvailable (lld)
+
+target_link_libraries (odb-compiler PRIVATE lldCOFF lldELF)
 
 ###############################################################################
 # Unit tests

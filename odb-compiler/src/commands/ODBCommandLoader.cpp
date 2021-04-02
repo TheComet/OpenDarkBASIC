@@ -1,9 +1,9 @@
 #include "odb-compiler/commands/ODBCommandLoader.hpp"
-#include "odb-compiler/commands/CommandIndex.hpp"
 #include "odb-compiler/commands/Command.hpp"
-#include "odb-sdk/DynamicLibrary.hpp"
-#include "odb-sdk/Log.hpp"
+#include "odb-compiler/commands/CommandIndex.hpp"
+#include "odb-compiler/parsers/DynamicLibData.hpp"
 #include "odb-sdk/FileSystem.hpp"
+#include "odb-sdk/Log.hpp"
 #include "odb-sdk/Reference.hpp"
 #include <filesystem>
 #include <unordered_set>
@@ -117,7 +117,7 @@ bool ODBCommandLoader::populateIndex(CommandIndex* index)
 
     for (const auto& path : pluginsToLoad)
     {
-        Reference<DynamicLibrary> lib = DynamicLibrary::open(path.string().c_str());
+        Reference<DynamicLibData> lib = DynamicLibData::open(path.string());
         if (lib == nullptr)
             continue;
 
@@ -129,23 +129,22 @@ bool ODBCommandLoader::populateIndex(CommandIndex* index)
 }
 
 // ----------------------------------------------------------------------------
-bool ODBCommandLoader::populateIndexFromLibrary(CommandIndex* index, DynamicLibrary* library)
+bool ODBCommandLoader::populateIndexFromLibrary(CommandIndex* index, DynamicLibData* library)
 {
-    auto lookupString = [&library](std::string sym) -> std::string {
-        const char** addr = reinterpret_cast<const char**>(
-            library->lookupSymbolAddress(sym.c_str()));
-        return addr ? *addr : "";
+    auto lookupString = [&library](const std::string& sym) -> std::string {
+        return library->lookupStringBySymbol(sym).value_or("");
     };
 
-    for (int i = 0; i != library->getSymbolCount(); ++i)
+    int symbolCount = library->getSymbolCount();
+    for (int i = 0; i != symbolCount; ++i)
     {
-        std::string cppSymbol = library->getSymbolAt(i);
+        std::string cppSymbol = library->getSymbolNameAt(i);
 
         std::string dbSymbol = lookupString(cppSymbol + "_name");
-        if (dbSymbol == "")
+        if (dbSymbol.empty())
             continue;
         std::string typeinfo = lookupString(cppSymbol + "_typeinfo");
-        if (typeinfo == "")
+        if (typeinfo.empty())
             continue;
         std::string helpfile = lookupString(cppSymbol + "_helpfile");  // optional symbol
 
